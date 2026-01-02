@@ -1,0 +1,10 @@
+[
+  {
+    "requirement_id": "GCP_Dummy_Ref.pdf-1-FAIL",
+    "status": "MISSING",
+    "full_reference_text": "FAILED TO NORMALIZE: Good Clinical Practice Guidelines (Dummy)\n    \n   ...",
+    "reference_source": "GCP_Dummy_Ref.pdf (Page 1)",
+    "sop_evidence": "[Page 1]: \"Standard Operating Procedure: Clinical Trial Management (SOP-CTM-001)\n    \n    1. Purpose\n    To define the responsibilities of the trial team.\n    \n    2. Responsibilities\n    The Investigator must b...\" (Score: 0.22)",
+    "justification": "The 'Reference Requirement' explicitly states 'FAILED TO NORMALIZE' and is a '(Dummy)' entry, indicating that no actual, auditable requirement has been provided against which the SOP evidence can be assessed."
+  }
+]

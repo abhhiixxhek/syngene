@@ -1,0 +1,23 @@
+boto3
+pypdf
+packaging
+numpy<2.0
+pandas
+
+torch==2.5.1+cpu; sys_platform == 'win32'
+torchvision==0.20.1+cpu; sys_platform == 'win32'
+torchaudio==2.5.1+cpu; sys_platform == 'win32'
+--extra-index-url https://download.pytorch.org/whl/cpu
+intel-openmp
+mkl
+
+sentence-transformers
+
+streamlit
+reportlab
+
+google-generativeai
+python-dotenv
+
+
+
