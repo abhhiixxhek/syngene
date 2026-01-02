@@ -122,35 +122,40 @@ class SOPVerifier:
             
             # 1. Semantic Search (Reference -> SOP)
             relevant_chunks = self._search_sop(req_embedding, top_k=3)
-            
-            # 2. Similarity Check
-            # Get best score
             best_score = relevant_chunks[0]['score'] if relevant_chunks else 0
             
-            status = "PRESENT"
-            justification = "High similarity match found."
+            # 2. Decision Logic (Strictly LLM Jury)
+            # User Rule: "If similarity ≥ threshold → mark AUTO-CANDIDATE. Else → send to LLM." (Interpreted as: filter chunks, but always allow LLM to judge)
             
-            # 3. Decision Logic (Strict Traffic Light)
-            if best_score >= 0.90:
-                 status = "PRESENT" # Strong evidence - Auto-Pass
-                 justification = "High confidence semantic match (> 90%)."
-            elif best_score >= 0.70:
-                 # Ambiguous - Check with LLM
-                 status, justification = self._llm_validation(req_text, relevant_chunks)
+            status = "MISSING"
+            justification = "No evidence found."
+            sop_evidence = "Not Found"
+
+            if not relevant_chunks or best_score < 0.35:
+                 status = "MISSING"
+                 justification = f"No relevant SOP sections found (Max Similarity: {best_score:.2f})."
+                 sop_evidence = "Not Found"
             else:
-                 # Likely Missing - But verify with LLM to be sure
-                 status, justification = self._llm_validation(req_text, relevant_chunks)
-            
+                 # Send strict candidate chunks to LLM
+                 status, justification, sop_evidence = self._llm_validation(req_text, relevant_chunks)
+                 
+                 # ENFORCEMENT RULES
+                 if status == "PRESENT" and (not sop_evidence or sop_evidence == "Not Found"):
+                     # Invalid state: Present but no evidence. Downgrade to MISSING or Error.
+                     status = "MISSING"
+                     justification = "LLM returned PRESENT but provided no SOP evidence. treated as MISSING."
+                     sop_evidence = "Not Found"
+
             # 4. Record Gap if not PRESENT
             if status in ["MISSING", "PARTIAL"]:
                 gaps.append({
                     'requirement_id': req.get('requirement_id'),
                     'status': status,
-                    'reference_requirement': req_text, # Verbatim Atomic Text
+                    'reference_requirement': req['full_requirement_text'], # Full Verbatim text
                     'reference_context': req.get('original_text', ''),
                     'reference_source': f"{req.get('source_document', '')} (Page {req.get('page_number')})",
                     'severity': req.get('mandatory_level', 'UNKNOWN'),
-                    'sop_evidence': self._format_evidence(relevant_chunks) if status == 'PARTIAL' else "Not Found",
+                    'sop_evidence': sop_evidence, 
                     'justification': justification
                 })
                 
@@ -177,49 +182,45 @@ class SOPVerifier:
             })
         return results
 
-    def _format_evidence(self, chunks: List[Dict]) -> str:
-        if not chunks:
-            return "No relevant text found."
-        # distinct chunks
-        evidence = []
-        for c in chunks:
-            evidence.append(f"[Page {c['chunk']['page']}]: \"{c['chunk']['text'][:200]}...\" (Score: {c['score']:.2f})")
-        return "\n".join(evidence)
-
-    def _llm_validation(self, req_text: str, sop_chunks: List[Dict]) -> Tuple[str, str]:
+    def _llm_validation(self, req_text: str, sop_chunks: List[Dict]) -> Tuple[str, str, str]:
         """
-        Asks Bedrock to decide: PRESENT / PARTIAL / WEAK / MISSING.
+        Asks Bedrock to decide: PRESENT / PARTIAL / MISSING.
+        Returns: (status, justification, sop_evidence)
         """
         
         evidence_text = ""
         for c in sop_chunks:
             evidence_text += f"---\n[Page {c['chunk']['page']}]\n{c['chunk']['text']}\n"
         
-        # Mistral Instruct Format [INST]
-        prompt = f"""<s>[INST] You are a rigorous Compliance Auditor.
+        # PROMPT TEMPLATE 2 - SOP VS REQUIREMENT JURY
+        prompt = f"""<s>[INST] You are a regulatory auditor.
+        Decide strictly based on evidence.
+        Do not infer intent.
+        Do not assume compliance.
         
-        TASK: Compare the "Reference Requirement" against the provided "SOP Evidence" excerpts.
-        Determine if the requirement is fully satisfied.
+        REFERENCE REQUIREMENT (VERBATIM):
+        \"""
+        {req_text}
+        \"""
         
-        Reference Requirement:
-        "{req_text}"
-        
-        SOP Evidence (Best potential matches found):
+        SOP EXCERPTS (VERBATIM):
+        \"""
         {evidence_text}
+        \"""
         
-        INSTRUCTIONS:
-        1. If the evidence explicitly confirms the requirement, typically matching the intent and key details, output PRESENT.
-        2. If the concept is mentioned but key specific details from the Reference are missing, output PARTIAL.
-        3. If the language is too vague (e.g., "should be considered" vs "must be done"), output WEAK.
-        4. If the evidence is irrelevant or contradictory, output MISSING.
+        Task:
+        - Decide if the SOP FULLY satisfies the reference requirement.
+        - Use ONLY the SOP text provided.
+        - If the requirement is explicitly and completely covered → PRESENT
+        - If the concept is mentioned but key elements are missing → PARTIAL
+        - If no evidence exists → MISSING
         
-        OUTPUT FORMAT:
-        {"{"}
-            "status": "PRESENT | PARTIAL | WEAK | MISSING",
-            "justification": "One sentence explanation."
-        {"}"}
-        
-        Return ONLY valid JSON. [/INST]"""
+        Return JSON ONLY:
+        {{
+          "status": "PRESENT | PARTIAL | MISSING",
+          "justification": "one sentence factual explanation",
+          "sop_evidence": "verbatim SOP text or Not Found"
+        }} [/INST]"""
         
         # Retry Logic
         max_retries = 3
@@ -229,7 +230,7 @@ class SOPVerifier:
                 body = {
                     "prompt": prompt,
                     "max_tokens": 4096,
-                    "temperature": 0.1
+                    "temperature": 0.0 # Zero temp for deterministic audit
                 }
                 
                 response = self.bedrock_client.invoke_model(
@@ -258,9 +259,18 @@ class SOPVerifier:
                 end = clean_text.rfind('}') + 1
                 if start != -1:
                     data = json.loads(clean_text[start:end])
-                    return data.get('status', 'MISSING'), data.get('justification', 'LLM parsed.')
+                    
+                    status = data.get('status', 'MISSING')
+                    justification = data.get('justification', 'LLM parsed.')
+                    sop_evidence = data.get('sop_evidence', 'Not Found')
+                    
+                    # Validate Status
+                    if status not in ["PRESENT", "PARTIAL", "MISSING"]:
+                        status = "MISSING"
+
+                    return status, justification, sop_evidence
                 else:
-                    return "MISSING", f"LLM output unparseable: {clean_text[:50]}"
+                    return "MISSING", f"LLM output unparseable: {clean_text[:50]}", "Not Found"
                      
             except Exception as e:
                 error_str = str(e)
@@ -274,6 +284,6 @@ class SOPVerifier:
                          time.sleep(2)
                     continue
                 
-                return "MISSING", "LLM Error."
+                return "MISSING", "LLM Error.", "Not Found"
         
-        return "MISSING", "LLM Max Retries."
+        return "MISSING", "LLM Max Retries.", "Not Found"

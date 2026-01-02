@@ -39,7 +39,10 @@ class RequirementNormalizer:
             # Enrich with metadata
             atomic_reqs = []
             for i, req in enumerate(requirements):
-                result_text = req.get('text', '')
+                # Mapping user's new schema keys to internal keys
+                result_text = req.get('requirement_text', '') 
+                severity = req.get('severity', 'SHOULD')
+                
                 if not result_text and isinstance(req, str):
                      result_text = req
                      
@@ -47,7 +50,7 @@ class RequirementNormalizer:
                     'requirement_id': f"{source_meta.get('source', 'DOC')}-{source_meta.get('page', 0)}-{i+1}",
                     'full_requirement_text': result_text,
                     'original_text': text_chunk,
-                    'mandatory_level': req.get('level', 'SHOULD') if isinstance(req, dict) else 'SHOULD',
+                    'mandatory_level': severity,
                     'source_document': source_meta.get('source', ''),
                     'page_number': source_meta.get('page', 0)
                 })
@@ -65,17 +68,32 @@ class RequirementNormalizer:
             }]
 
     def _build_prompt(self, text: str) -> str:
-        # Mistral Instruct Format
-        return f"""<s>[INST] You are a Compliance Analyst. Your job is to break down the following Reference Document text into ATOMIC, VERIFIABLE requirements.
+        # User Provided PROMPT TEMPLATE 1
+        return f"""<s>[INST] You are a regulatory compliance analyst.
+        Your task is to decompose reference text into atomic, auditable obligations.
         
-        Rules:
-        1. Each requirement must be a single, standalone statement.
-        2. Identify if it is a MUST, SHOULD, or MAY requirement.
-        3. Do not change the meaning.
-        4. Output JSON format only: [{{"text": "Requirement text", "level": "MUST"}}, ...]
+        Reference Text:
+        \"""
+        {text}
+        \"""
         
-        Text to process:
-        "{text}" [/INST]"""
+        Instructions:
+        - Split the text into ATOMIC REQUIREMENTS.
+        - One requirement = one independently auditable obligation.
+        - Do NOT merge multiple obligations.
+        - Do NOT split a single obligation unnecessarily.
+        - Preserve original wording (no paraphrasing).
+        - If normalization is ambiguous, return NORMALIZATION_FAILED.
+        - For lists (e.g. "education, training, experience"), SPLIT into separate requirements.
+        - For combined actions (e.g. "maintain documentation demonstrating..."), KEEP together.
+        
+        Return JSON only:
+        [
+          {{
+            "requirement_text": "verbatim requirement",
+            "severity": "MUST | SHOULD | MAY"
+          }}
+        ] [/INST]"""
 
     def _invoke_bedrock(self, prompt: str) -> str:
         retry_count = 0

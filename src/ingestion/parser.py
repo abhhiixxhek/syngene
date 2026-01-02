@@ -108,7 +108,9 @@ class DocumentParser:
         prompt = f"""<s>[INST] You are an expert document parser.
         Clean up the following raw PDF text. 
         Fix extraction errors, merge broken lines, and preserve the layout/tables as Markdown text.
-        Do NOT summarize. Return the full content but clean.
+        
+        CRITICAL: OUTPUT ONLY THE CLEANED TEXT. NO "HERE IS THE TEXT" OR "SURE".
+        DO NOT SUMMARIZE. PROHIBITED TO OMIT DATA.
         
         Raw Text:
         {raw_text[:8000]} 
